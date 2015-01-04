@@ -59,33 +59,34 @@
 ;; 3) Contacts the provider's server at its token URI, to obtain a token.
 ;; 4) 
 (define (login-handler client)
-  (define req/code ;; request the user sends via redirect after approving access
-    (send/suspend
-     (λ (k-url)
-       (printf "Sending user to Google\n\t(redirect_uri=~a)" k-url)
-       (redirect-to
-        (string->url (format "~a?~a"
-                             auth-uri-string
-                             (user-auth-query client k-url)))))))
-  
-  (define bindings (request-bindings/raw req/code))
-  (define (maybe-get key)
-    (match (bindings-assq key bindings)
-      [(? binding:form? b)
-       (bytes->string/utf-8 (binding:form-value b))]
-      [_ #f]))
-  
-  ;; Validate user's redirected request:
-  (define auth-error (maybe-get #"error"))
-  (when auth-error (error-401 auth-error))
-  
-  (define state (maybe-get #"state"))
-  (unless (equal? state (bytes->hex-string token)) (error-401 "missing token"))
-  
-  (define code (maybe-get #"code")) ; auth code from Google
-  (unless code (error-401 "missing authorization code"))
-  
-  (request-access-token token-uri-string code #;callback-url)
+  (λ (req)
+    (define req/code ;; request the user sends via redirect after approving access
+      (send/suspend
+       (λ (k-url)
+         (printf "Sending user to Google\n\t(redirect_uri=~a)" k-url)
+         (redirect-to
+          (string->url (format "~a?~a"
+                               auth-uri-string
+                               (user-auth-query client k-url)))))))
+    
+    (define bindings (request-bindings/raw req/code))
+    (define (maybe-get key)
+      (match (bindings-assq key bindings)
+        [(? binding:form? b)
+         (bytes->string/utf-8 (binding:form-value b))]
+        [_ #f]))
+    
+    ;; Validate user's redirected request:
+    (define auth-error (maybe-get #"error"))
+    (when auth-error (error-401 auth-error))
+    
+    (define state (maybe-get #"state"))
+    (unless (equal? state (bytes->hex-string token)) (error-401 "missing token"))
+    
+    (define code (maybe-get #"code")) ; auth code from Google
+    (unless code (error-401 "missing authorization code"))
+    
+    (request-access-token token-uri-string code #;callback-url))
   ;; TODO: Extract info from the ID token, check the user against our DB,
   ;; redirect to right page...
   )
@@ -122,9 +123,10 @@
 (require xml)
 
 (define (test-login client)
-  (response/xexpr `(html (head "Test results")
-                         (body (pre ,(jsexpr->string
-                                      (login-handler client)))))))
+  (λ (req)
+    (response/xexpr `(html (head "Test results")
+                           (body (pre ,(jsexpr->string
+                                        ((login-handler client) req))))))))
 
 (define (error-401 msg) ;; String -> Response
   (response/full
