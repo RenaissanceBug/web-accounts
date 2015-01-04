@@ -4,6 +4,9 @@
          web-server/http/redirect
          racket/serialize)
 
+(provide (struct-out oauth2-client)
+         ends login-handler test-login)
+
 ;; Exception subtype for failures to authenticate:
 ;(struct exn:fail:authorization exn:fail (type))
 
