@@ -1,6 +1,6 @@
 #lang info
 
-(define collection "wam")
+(define collection "web-accounts")
 (define scribblings '(("doc.scrbl")))
 ;(define compile-omit-paths '("tests.rkt"))
 ;(define deps '("base"))
