@@ -2,13 +2,31 @@
 
 @(require (for-label racket json))
 
-@title{Web User Account Management}
+@title{web-accounts: Web User Account Management}
 
 @author[(author+email "Jordan Johnson" "jmj@fellowhuman.com")]
 
+@section{CSRF Token Generation}
+
+@defmodule[web-accounts/csrf-token]
+
+For generating random byte-strings for use as CSRF tokens.
+
+@defproc[(fresh-csrf-token [len exact-positive-integer? 20])
+         bytes?]{
+  Produces a random token of length @exec{len}.
+}
+
+@defproc[(fresh-csrf-token-/dev/random [len exact-positive-integer? 20])
+         bytes?]{
+  Produces a random token of length @exec{len}, by reading from
+  @exec{/dev/random}. If the system has no @exec{/dev/random},
+  this function raises an error.
+}
+
 @section{OpenID Endpoint Discovery: Google}
 
-@defmodule[wam/google/endpoints]
+@defmodule[web-accounts/google/endpoints]
 
 A library for fetching Google's current OAuth2 endpoints, as specified in
 @link["https://developers.google.com/accounts/docs/OpenIDConnect"]{Google's
