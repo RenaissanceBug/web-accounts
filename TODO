@@ -1,0 +1,8 @@
+5. Obtain user information from the ID token
+6. Authenticate the user
+
+Once we've tested all this, we'll need to get into setting up
+  - new-user signup flow
+  - behavior for authenticated users.
+  - admin pages for managing users
+
