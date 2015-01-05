@@ -5,7 +5,8 @@
          racket/serialize)
 
 (provide (struct-out oauth2-client)
-         ends login-handler test-login)
+         ends login-handler
+         callback)
 
 ;; Exception subtype for failures to authenticate:
 ;(struct exn:fail:authorization exn:fail (type))
@@ -52,23 +53,22 @@
                             ,@(let ([hd (oauth2-client-hd me)])
                                 (if hd `((hd . ,hd)) '())))))
 
-;; login-handler : 
+;; login-handler : OAuth2Client String -> Response
 ;; 1) Redirects the client to the provider's auth URI, with a local
 ;;    redirect URI for after the user authorizes access.
+(define (login-handler client callback-url)
+  (lambda (req)
+    (printf "Sending user to Google\n\t(redirect_uri=~a)\n" callback-url)
+    (redirect-to
+      (format "~a?~a"
+              auth-uri-string
+              (user-auth-query client callback-url)))))
+
+;; OAuth2Client String -> JSExpr
 ;; 2) Validates the client's request to the local redirect URI.
 ;; 3) Contacts the provider's server at its token URI, to obtain a token.
-;; 4) 
-(define (login-handler client)
-  (λ (req)
-    (define req/code ;; request the user sends via redirect after approving access
-      (send/suspend
-       (λ (k-url)
-         (printf "Sending user to Google\n\t(redirect_uri=~a)" k-url)
-         (redirect-to
-          (string->url (format "~a?~a"
-                               auth-uri-string
-                               (user-auth-query client k-url)))))))
-    
+(define (callback client callback-url)
+  (lambda (req/code)
     (define bindings (request-bindings/raw req/code))
     (define (maybe-get key)
       (match (bindings-assq key bindings)
@@ -79,14 +79,14 @@
     ;; Validate user's redirected request:
     (define auth-error (maybe-get #"error"))
     (when auth-error (error-401 auth-error))
-    
+
     (define state (maybe-get #"state"))
     (unless (equal? state (bytes->hex-string token)) (error-401 "missing token"))
-    
+
     (define code (maybe-get #"code")) ; auth code from Google
     (unless code (error-401 "missing authorization code"))
-    
-    (request-access-token token-uri-string code #;callback-url))
+
+    (request-access-token client token-uri-string code callback-url))
   ;; TODO: Extract info from the ID token, check the user against our DB,
   ;; redirect to right page...
   )
@@ -96,7 +96,7 @@
 ;; OAuth2Client String String String -> JSExpr
 ;; Connects to Google to request an access token verifying the user's identity.
 ;; Produces a JSExpr containing info about the user. XXX make more precise
-(define (request-access-token client token-uri-string auth-code #;callback-url)
+(define (request-access-token client token-uri-string auth-code callback-url)
   (define provider-token-host (url-host (string->url token-uri-string)))
   (define-values (status headers ip)
     (http-sendrecv provider-token-host
@@ -107,7 +107,7 @@
                     `((code          . ,auth-code)
                       (client_id     . ,(oauth2-client-id client))
                       (client_secret . ,(oauth2-client-secret client))
-                      ;(redirect_uri  . ,callback-url)
+                      (redirect_uri  . ,callback-url)
                       (grant_type    . "authorization_code")))
                    #:headers
                    (list "Content-Type: application/x-www-form-urlencoded")))
@@ -115,19 +115,24 @@
   (unless (regexp-match? #rx"200" status)
     (error-401 (format "failed to obtain token; status: ~a" status)))
 
+  (define pp (peeking-input-port ip))
+  (displayln (port->string pp))
   (define result (read-json ip))
   (unless result
     (error-401 (format "malformed access token from Google")))
   result)
 
-(require xml)
+#|
 
-(define (test-login client)
+(define (test-login client callback)
   (λ (req)
-    (response/xexpr `(html (head "Test results")
-                           (body (pre ,(jsexpr->string
-                                        ((login-handler client) req))))))))
+    (response/xexpr
+      `(html (head "Test results")
+             (body (pre ,(jsexpr->string
+                           ((login-handler client callback) req))))))))
+|#
 
+(require xml)
 (define (error-401 msg) ;; String -> Response
   (response/full
    401 #"Unauthorized"
