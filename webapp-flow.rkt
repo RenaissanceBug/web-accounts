@@ -8,8 +8,10 @@
          ends login-handler
          callback)
 
+(define TESTING #f)
+
 ;; Exception subtype for failures to authenticate:
-;(struct exn:fail:authorization exn:fail (type))
+(struct exn:fail:authorization exn:fail ())
 
 ;; An OAuth2Client is an oauth2-client struct:
 (struct oauth2-client [id secret hd])
@@ -53,12 +55,15 @@
                             ,@(let ([hd (oauth2-client-hd me)])
                                 (if hd `((hd . ,hd)) '())))))
 
+(require "auth-log.rkt")
+
 ;; login-handler : OAuth2Client String -> Response
 ;; 1) Redirects the client to the provider's auth URI, with a local
 ;;    redirect URI for after the user authorizes access.
 (define (login-handler client callback-url)
   (lambda (req)
-    (printf "Sending user to Google\n\t(redirect_uri=~a)\n" callback-url)
+    (when TESTING
+      (printf "Sending user to Google\n\t(redirect_uri=~a)\n" callback-url))
     (redirect-to
       (format "~a?~a"
               auth-uri-string
@@ -75,71 +80,83 @@
         [(? binding:form? b)
          (bytes->string/utf-8 (binding:form-value b))]
         [_ #f]))
-    
+
     ;; Validate user's redirected request:
     (define auth-error (maybe-get #"error"))
-    (when auth-error (error-401 auth-error))
+    (when auth-error (error-400 auth-error))
 
     (define state (maybe-get #"state"))
-    (unless (equal? state (bytes->hex-string token)) (error-401 "missing token"))
+    (unless (equal? state (bytes->hex-string token))
+      (error-400 "missing token"))
 
     (define code (maybe-get #"code")) ; auth code from Google
-    (unless code (error-401 "missing authorization code"))
+    (unless code (error-400 "missing authorization code"))
 
     (request-access-token client token-uri-string code callback-url))
   ;; TODO: Extract info from the ID token, check the user against our DB,
   ;; redirect to right page...
   )
 
-(require net/http-client json)
+(require net/http-client json openssl)
 
 ;; OAuth2Client String String String -> JSExpr
 ;; Connects to Google to request an access token verifying the user's identity.
 ;; Produces a JSExpr containing info about the user. XXX make more precise
 (define (request-access-token client token-uri-string auth-code callback-url)
-  (define provider-token-host (url-host (string->url token-uri-string)))
-  (define-values (status headers ip)
-    (http-sendrecv provider-token-host
-                   token-uri-string
-                   #:method "POST"
-                   #:data
-                   (alist->form-urlencoded
-                    `((code          . ,auth-code)
-                      (client_id     . ,(oauth2-client-id client))
-                      (client_secret . ,(oauth2-client-secret client))
-                      (redirect_uri  . ,callback-url)
-                      (grant_type    . "authorization_code")))
-                   #:headers
-                   (list "Content-Type: application/x-www-form-urlencoded")))
-  ;; TODO: process response from provider
-  (unless (regexp-match? #rx"200" status)
-    (error-401 (format "failed to obtain token; status: ~a" status)))
+  (with-handlers ([exn:fail? (lambda (e)
+                               (error-500
+                                 (format "error in acquiring token: ~a"
+                                         (exn-message e))))]
+                  [exn:fail:authorization?
+                    (lambda (e)
+                      (error-500 (exn-message e)))])
+    (define-values (status headers ip)
+      (http-sendrecv (url-host (string->url token-uri-string))
+                     token-uri-string
+                     #:method #"POST"
+                     #:ssl? (ssl-secure-client-context)
+                     #:data
+                     (alist->form-urlencoded
+                       `((code          . ,auth-code)
+                         (client_id     . ,(oauth2-client-id client))
+                         (client_secret . ,(oauth2-client-secret client))
+                         (redirect_uri  . ,callback-url)
+                         (grant_type    . "authorization_code")))
+                     #:headers
+                     (list "Content-Type: application/x-www-form-urlencoded")))
+    (unless (regexp-match? #rx"200" status)
+      (raise (exn:fail:authorization
+               (format
+                 "Failed to obtain token from Google.\nStatus: ~a\nBody:\n~a"
+                 status
+                 (port->string ip))
+               (current-continuation-marks))))
 
-  (define pp (peeking-input-port ip))
-  (displayln (port->string pp))
-  (define result (read-json ip))
-  (unless result
-    (error-401 (format "malformed access token from Google")))
-  result)
-
-#|
-
-(define (test-login client callback)
-  (λ (req)
-    (response/xexpr
-      `(html (head "Test results")
-             (body (pre ,(jsexpr->string
-                           ((login-handler client callback) req))))))))
-|#
+    (with-handlers ([exn:fail?
+                      (lambda (e)
+                        (error-401 "malformed access token from Google"))])
+      (read-json ip))))
 
 (require xml)
-(define (error-401 msg) ;; String -> Response
+(define (error-400 msg) ;; String -> Response
   (response/full
-   401 #"Unauthorized"
+   400 #"Unauthorized"
    (current-seconds) TEXT/HTML-MIME-TYPE
    empty
    (list (string->bytes/utf-8
-          (xexpr->string `(html (head) (body ,msg)))))))
+          (xexpr->string `(html (head (title "401"))
+                                (body (h1 "Error 401; unauthenticated")
+                                      (pre ,msg))))))))
+
+(define (error-500 msg) ;; String -> Response
+  (response/full
+   500 #"Server Error"
+   (current-seconds) TEXT/HTML-MIME-TYPE
+   empty
+   (list (string->bytes/utf-8
+          (xexpr->string `(html (head (title "401"))
+                                (body (h1 "Error 500")
+                                      (pre ,msg))))))))
 
 #|
 DONE:
